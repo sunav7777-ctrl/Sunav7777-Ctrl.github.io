@@ -120,11 +120,150 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 5. Header Shadow on Scroll
   const header = document.getElementById('site-header');
-  window.addEventListener('scroll', () => {
-    if (window.scrollY > 20) {
-      header.style.boxShadow = '0 4px 20px rgba(32, 23, 21, 0.08)';
-    } else {
-      header.style.boxShadow = 'none';
+  if (header) {
+    window.addEventListener('scroll', () => {
+      if (window.scrollY > 20) {
+        header.style.boxShadow = '0 4px 20px rgba(32, 23, 21, 0.08)';
+      } else {
+        header.style.boxShadow = 'none';
+      }
+    }, { passive: true });
+  }
+
+  // ==========================================================================
+  // 6. GA4 Event Tracking (section_view & cta_click)
+  // ==========================================================================
+  // Prevent duplicate registration if script runs more than once
+  if (window.__GA4_TRACKING_INITIALIZED__) return;
+  window.__GA4_TRACKING_INITIALIZED__ = true;
+
+  // Safe gtag caller (never throws or blocks navigation even if GA is blocked)
+  function sendGaEvent(eventName, params) {
+    if (typeof window.gtag === 'function') {
+      try {
+        window.gtag('event', eventName, params);
+      } catch (err) {
+        console.warn(`[GA4] Failed to send ${eventName}:`, err);
+      }
     }
-  }, { passive: true });
+  }
+
+  // --- 6-A. CTA Click Tracking (cta_click) ---
+  const trackedCtaButtons = new Set();
+  const ctaHeroEl = document.querySelector('#cta-hero, #cta-btn-hero, [data-cta-location="hero"]');
+  const ctaFinalEl = document.querySelector('#cta-final, #cta-btn-final, [data-cta-location="final"]');
+
+  const ctaConfigs = [
+    { el: ctaHeroEl, location: 'hero' },
+    { el: ctaFinalEl, location: 'final' }
+  ];
+
+  ctaConfigs.forEach(({ el, location }) => {
+    if (!el || trackedCtaButtons.has(el)) return;
+    trackedCtaButtons.add(el);
+
+    // Click event fires on both pointer click and keyboard Enter/Space activation on <a> elements
+    el.addEventListener('click', () => {
+      sendGaEvent('cta_click', {
+        button_location: location
+      });
+      // No event.preventDefault(), no delay; navigation proceeds immediately
+    });
+  });
+
+  // --- 6-B. Section View Tracking (section_view) ---
+  const sectionsToTrack = [
+    { id: 'hero-title', name: 'hero' },
+    { id: 'detail-space-title', name: 'detail' },
+    { id: 'purchase-title', name: 'cta' }
+  ];
+
+  const sentSections = new Set();
+
+  // Calculate dynamic sticky header offset
+  const getHeaderHeight = () => {
+    const siteHeader = document.getElementById('site-header');
+    return siteHeader ? siteHeader.getBoundingClientRect().height : 64;
+  };
+
+  const headerHeight = Math.ceil(getHeaderHeight());
+  const rootMargin = `-${headerHeight}px 0px 0px 0px`;
+
+  // Helper: check if element title currently has >= 50% visibility in viewport below header
+  function checkElementVisibility(el) {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const effectiveTop = Math.max(rect.top, headerHeight);
+    const effectiveBottom = Math.min(rect.bottom, window.innerHeight || document.documentElement.clientHeight);
+    const visibleHeight = Math.max(0, effectiveBottom - effectiveTop);
+    const elementHeight = rect.height;
+    return elementHeight > 0 && (visibleHeight / elementHeight) >= 0.5;
+  }
+
+  function handleSectionReach(name, targetEl, observer) {
+    if (sentSections.has(name)) return;
+    if (document.visibilityState !== 'visible') return;
+
+    sentSections.add(name);
+    sendGaEvent('section_view', {
+      section_name: name
+    });
+
+    if (observer && targetEl) {
+      observer.unobserve(targetEl);
+    }
+  }
+
+  // IntersectionObserver configuration: 50% threshold, excluding sticky header height
+  let sectionObserver = null;
+  if ('IntersectionObserver' in window) {
+    sectionObserver = new IntersectionObserver((entries, obs) => {
+      // Send only when page is visible
+      if (document.visibilityState !== 'visible') return;
+
+      entries.forEach(entry => {
+        if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+          const sectionName = entry.target.dataset.sectionTrackName;
+          if (sectionName) {
+            handleSectionReach(sectionName, entry.target, obs);
+          }
+        }
+      });
+    }, {
+      root: null,
+      rootMargin: rootMargin,
+      threshold: 0.5
+    });
+  }
+
+  // Observe elements
+  sectionsToTrack.forEach(item => {
+    const el = document.getElementById(item.id);
+    if (!el) return;
+    el.dataset.sectionTrackName = item.name;
+
+    if (sectionObserver) {
+      sectionObserver.observe(el);
+    } else {
+      // Fallback if IntersectionObserver is unavailable
+      if (checkElementVisibility(el)) {
+        handleSectionReach(item.name, el, null);
+      }
+    }
+  });
+
+  // Handle tab visibility change (when user returns from another tab)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      sectionsToTrack.forEach(item => {
+        if (!sentSections.has(item.name)) {
+          const el = document.getElementById(item.id);
+          if (el && checkElementVisibility(el)) {
+            handleSectionReach(item.name, el, sectionObserver);
+          }
+        }
+      });
+    }
+  });
 });
+
